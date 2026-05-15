@@ -1,1 +1,5 @@
+kubectl
+minikube-linux-amd64
+*.tar.gz
+*.zip
 info.txt
