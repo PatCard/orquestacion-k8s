@@ -22,20 +22,18 @@ kubectl rollout restart deployment/backend-deployment
 
 # Esperar que los pods estén Running
 echo "⏳ Esperando que los pods estén listos..."
-kubectl wait --for=condition=Ready pod -l app=frontend --timeout=120s
-kubectl wait --for=condition=Ready pod -l app=backend --timeout=120s
+kubectl wait --for=condition=Ready pod -l app=frontend --timeout=180s
+kubectl wait --for=condition=Ready pod -l app=backend --timeout=180s
 
-# Matar port-forwards anteriores si existen
-kill $(lsof -ti:9090) 2>/dev/null
+# Matar procesos anteriores en puertos usados
+echo "🧹 Limpiando puertos..."
+kill $(lsof -ti:80) 2>/dev/null
 kill $(lsof -ti:8000) 2>/dev/null
+sleep 2
 
-# Esperar un momento antes de reconectar
-sleep 3
-
-# Exponer servicios en segundo plano
-echo "🔗 Exponiendo servicios..."
-kubectl port-forward service/frontend-service 9090:80 --address=0.0.0.0 &
-kubectl port-forward service/backend-service 8000:8000 --address=0.0.0.0 &
+# Exponer Ingress controller en puerto 80
+echo "🔗 Exponiendo Ingress en puerto 80..."
+sudo kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 80:80 --address=0.0.0.0 &
 
 sleep 3
 
@@ -47,7 +45,7 @@ kubectl get pods
 echo ""
 kubectl get hpa
 echo ""
-echo "🌐 Frontend: http://192.168.1.10:9090"
-echo "🔧 Backend:  http://192.168.1.10:8000"
+echo "🌐 App: http://192.168.1.10"
+echo "🔧 API: http://192.168.1.10/api/health"
 echo ""
 echo "Para detener todo ejecuta: ./stop.sh"
