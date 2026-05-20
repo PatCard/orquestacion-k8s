@@ -20,12 +20,14 @@ orquestacion-k8s/
 │       ├── index.html
 │       ├── nginx.conf
 │       └── Dockerfile
-└── manifests/
-    ├── 01-pods/
-    ├── 02-deployments/
-    ├── 03-services/
-    ├── 04-configmaps/
-    └── 05-namespaces/
+├── manifests/
+│   ├── 01-pods/
+│   ├── 02-deployments/
+│   ├── 03-services/
+│   ├── 04-configmaps/
+│   └── 05-namespaces/
+├── start.sh              # Levanta todo el entorno
+└── stop.sh               # Detiene todo el entorno
 ```
 
 ## Fases de aprendizaje
@@ -34,6 +36,31 @@ orquestacion-k8s/
 - [x] **Fase 2** - Conceptos core (Pod, Deployment, Service, ConfigMap, Namespace)
 - [x] **Fase 3** - Práctica real con HPA
 - [ ] **Fase 4** - Certificación (CKAD)
+
+---
+
+## 🚀 Inicio rápido
+
+```bash
+./start.sh
+```
+
+El script hace todo automáticamente:
+1. Inicia el cluster con minikube
+2. Reconstruye las imágenes Docker dentro del registry de minikube
+3. Reinicia los deployments con las nuevas imágenes
+4. Espera que todos los pods estén `Ready`
+5. Expone los servicios con port-forward
+
+Una vez listo acceder desde el navegador:
+- **Frontend:** `http://192.168.1.10:9090`
+- **Backend:**  `http://192.168.1.10:8000`
+
+## 🛑 Detener todo
+
+```bash
+./stop.sh
+```
 
 ---
 
@@ -309,54 +336,14 @@ rules:
 | `GET /pods` | Listar pods del backend |
 | `GET /hpa` | Estado del HPA |
 
-### Construir y desplegar
-
-```bash
-# Apuntar Docker al registry de minikube
-eval $(minikube docker-env)
-
-# Construir imágenes
-docker build -t k8s-demo-backend:2.0 app/backend/
-docker build -t k8s-demo-frontend:2.0 app/frontend/
-
-# Aplicar manifiestos
-kubectl apply -f manifests/02-deployments/
-kubectl apply -f manifests/03-services/
-kubectl apply -f manifests/04-configmaps/
-
-# Exponer servicios
-kubectl port-forward service/frontend-service 9090:80 --address=0.0.0.0 &
-kubectl port-forward service/backend-service 8000:8000 --address=0.0.0.0 &
-```
-
 ### Habilitar metrics-server (requerido para HPA)
 
 ```bash
 minikube addons enable metrics-server
 
-# Fix para certificados autofirmados
+# Fix para certificados autofirmados en minikube
 kubectl patch deployment metrics-server -n kube-system --type=json \
   -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
-```
-
----
-
-## Inicio rápido (cada sesión)
-
-```bash
-minikube start --driver=docker
-eval $(minikube docker-env)
-kubectl port-forward service/frontend-service 9090:80 --address=0.0.0.0 &
-kubectl port-forward service/backend-service 8000:8000 --address=0.0.0.0 &
-```
-
-Abrir: `http://192.168.1.10:9090`
-
-## Detener todo
-
-```bash
-kill %1 %2
-minikube stop
 ```
 
 ---
@@ -384,6 +371,7 @@ kubectl top pods                                            # Ver uso de CPU/mem
 kubectl get deployments                                     # Listar deployments
 kubectl scale deployment <nombre> --replicas=5              # Escalar manualmente
 kubectl set image deployment/<nombre> <container>=<imagen>  # Actualizar imagen
+kubectl rollout restart deployment/<nombre>                 # Reiniciar deployment
 
 # HPA
 kubectl get hpa                                             # Ver estado del HPA
