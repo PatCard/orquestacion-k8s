@@ -12,6 +12,14 @@ Repositorio de aprendizaje de Kubernetes desde cero, usando minikube en Linux.
 
 ```
 orquestacion-k8s/
+├── app/
+│   ├── backend/          # FastAPI + Python
+│   │   ├── main.py
+│   │   └── Dockerfile
+│   └── frontend/         # Nginx + HTML
+│       ├── index.html
+│       ├── nginx.conf
+│       └── Dockerfile
 └── manifests/
     ├── 01-pods/
     ├── 02-deployments/
@@ -24,7 +32,7 @@ orquestacion-k8s/
 
 - [x] **Fase 1** - Instalación y fundamentos
 - [x] **Fase 2** - Conceptos core (Pod, Deployment, Service, ConfigMap, Namespace)
-- [ ] **Fase 3** - Práctica real
+- [x] **Fase 3** - Práctica real con HPA
 - [ ] **Fase 4** - Certificación (CKAD)
 
 ---
@@ -131,8 +139,6 @@ spec:
 kubectl scale deployment nginx-deployment --replicas=5
 ```
 
-> **Próximamente (Fase 3):** HPA (Horizontal Pod Autoscaler) para escalar automáticamente según uso de CPU/memoria.
-
 ### 03 - Service
 
 IP fija que apunta siempre a los pods correctos, sin importar si cambian o cuántos haya.
@@ -160,26 +166,40 @@ spec:
 | `NodePort` | Accesible desde fuera, por un puerto fijo |
 | `LoadBalancer` | Para nubes (AWS, Azure, GCP) |
 
-### 04 - ConfigMap
+### 04 - ConfigMap y Secret
 
-Almacena configuración separada de la imagen. Reutilizable en múltiples pods.
-
+**ConfigMap** — configuración general:
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: nginx-config
+  name: app-config
 data:
-  AMBIENTE: "desarrollo"
+  DB_HOST: "postgres-service"
+  DB_NAME: "appdb"
   VERSION: "1.0"
-  MENSAJE: "Hola desde ConfigMap"
 ```
 
-> Las variables se inyectan en el pod con `envFrom.configMapRef`.
+**Secret** — datos sensibles (contraseñas, tokens):
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+stringData:
+  DB_USER: "appuser"
+  DB_PASS: "apppass"
+```
+
+| | ConfigMap | Secret |
+|---|---|---|
+| Tipo de dato | Configuración general | Datos sensibles |
+| Almacenamiento | Texto plano | Base64 encriptado |
 
 ### 05 - Namespace
 
-Agrupa y aísla recursos dentro del mismo cluster. Permite separar entornos sin necesitar clusters distintos.
+Agrupa y aísla recursos dentro del mismo cluster.
 
 ```yaml
 apiVersion: v1
@@ -193,14 +213,151 @@ metadata:
   name: produccion
 ```
 
-**Namespaces internos de K8s:**
+---
 
-| Namespace | Para qué |
+## Fase 3 - Práctica real con HPA
+
+### Arquitectura de la app demo
+
+```
+Navegador → frontend (nginx:80) → backend (fastapi:8000) → postgresql:5432
+```
+
+### Stack desplegado
+
+| Componente | Imagen | Tipo |
+|---|---|---|
+| frontend | k8s-demo-frontend:2.0 | NodePort 30090 |
+| backend | k8s-demo-backend:2.0 | ClusterIP 8000 |
+| postgres | postgres:15 | ClusterIP 5432 |
+
+### PersistentVolumeClaim
+
+Almacenamiento que sobrevive si el pod muere:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+### HPA - Horizontal Pod Autoscaler
+
+Escala automáticamente según uso de CPU:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-deployment
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 20
+```
+
+**Comportamiento observado:**
+```
+Sin carga  → 1 pod  (mínimo)
+Con stress → escala hasta 5 pods automáticamente
+Sin carga  → baja de vuelta a 1 pod (tras ~5 min de enfriamiento)
+```
+
+### RBAC - Permisos para el backend
+
+El backend necesita permisos para leer pods y HPA del cluster:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backend-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+```
+
+### Endpoints del backend
+
+| Endpoint | Descripción |
 |---|---|
-| `default` | Donde corren los recursos por defecto |
-| `kube-system` | Componentes internos de K8s |
-| `kube-public` | Recursos públicos del cluster |
-| `kube-node-lease` | Control de salud de los nodos |
+| `GET /` | Estado de la API |
+| `GET /health` | Health check |
+| `GET /db` | Verificar conexión a PostgreSQL |
+| `GET /stress?segundos=15` | Generar carga de CPU |
+| `GET /pods` | Listar pods del backend |
+| `GET /hpa` | Estado del HPA |
+
+### Construir y desplegar
+
+```bash
+# Apuntar Docker al registry de minikube
+eval $(minikube docker-env)
+
+# Construir imágenes
+docker build -t k8s-demo-backend:2.0 app/backend/
+docker build -t k8s-demo-frontend:2.0 app/frontend/
+
+# Aplicar manifiestos
+kubectl apply -f manifests/02-deployments/
+kubectl apply -f manifests/03-services/
+kubectl apply -f manifests/04-configmaps/
+
+# Exponer servicios
+kubectl port-forward service/frontend-service 9090:80 --address=0.0.0.0 &
+kubectl port-forward service/backend-service 8000:8000 --address=0.0.0.0 &
+```
+
+### Habilitar metrics-server (requerido para HPA)
+
+```bash
+minikube addons enable metrics-server
+
+# Fix para certificados autofirmados
+kubectl patch deployment metrics-server -n kube-system --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+```
+
+---
+
+## Inicio rápido (cada sesión)
+
+```bash
+minikube start --driver=docker
+eval $(minikube docker-env)
+kubectl port-forward service/frontend-service 9090:80 --address=0.0.0.0 &
+kubectl port-forward service/backend-service 8000:8000 --address=0.0.0.0 &
+```
+
+Abrir: `http://192.168.1.10:9090`
+
+## Detener todo
+
+```bash
+kill %1 %2
+minikube stop
+```
 
 ---
 
@@ -211,32 +368,33 @@ metadata:
 minikube start --driver=docker                              # Iniciar cluster
 minikube stop                                               # Detener cluster
 minikube ip                                                 # IP del nodo
+minikube addons enable metrics-server                       # Habilitar metrics
 
 # Pods
 kubectl get pods                                            # Listar pods
+kubectl get pods -w                                         # Watch en tiempo real
 kubectl get pods --all-namespaces                           # Ver todos los namespaces
-kubectl get pods --namespace=desarrollo                     # Ver pods de un namespace
 kubectl describe pod <nombre>                               # Inspeccionar pod
 kubectl logs <nombre>                                       # Ver logs
 kubectl exec -it <nombre> -- bash                           # Entrar al contenedor
 kubectl delete pod <nombre>                                 # Eliminar pod
+kubectl top pods                                            # Ver uso de CPU/memoria
 
 # Deployments
 kubectl get deployments                                     # Listar deployments
-kubectl scale deployment <nombre> --replicas=5              # Escalar
+kubectl scale deployment <nombre> --replicas=5              # Escalar manualmente
+kubectl set image deployment/<nombre> <container>=<imagen>  # Actualizar imagen
+
+# HPA
+kubectl get hpa                                             # Ver estado del HPA
+kubectl describe hpa <nombre>                               # Detalle del HPA
 
 # Services
 kubectl get services                                        # Listar services
 kubectl port-forward service/<nombre> 8080:80 --address=0.0.0.0
 
-# ConfigMaps
-kubectl get configmaps                                      # Listar configmaps
-kubectl describe configmap <nombre>                         # Ver contenido
-
-# Namespaces
-kubectl get namespaces                                      # Listar namespaces
-
 # Manifiestos
 kubectl apply -f <archivo.yaml>                             # Aplicar manifiesto
+kubectl apply -f <directorio/>                              # Aplicar directorio
 kubectl delete -f <archivo.yaml>                            # Eliminar por manifiesto
 ```

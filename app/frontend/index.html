@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>K8s Demo App</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+        h1 { color: #00d4ff; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { background: #16213e; border-radius: 8px; padding: 20px; }
+        h2 { color: #00d4ff; margin-bottom: 15px; font-size: 1rem; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; background: #0066cc; color: white; border: none; border-radius: 4px; font-size: 0.9rem; }
+        button:hover { background: #0052a3; }
+        button.stress { background: #cc3300; }
+        button.stress:hover { background: #a32800; }
+        pre { background: #0d1117; padding: 15px; border-radius: 4px; font-size: 0.8rem; overflow: auto; max-height: 200px; }
+        .pods { display: flex; flex-direction: column; gap: 8px; }
+        .pod { padding: 8px 12px; border-radius: 4px; font-size: 0.85rem; display: flex; justify-content: space-between; }
+        .pod.running { background: #1a472a; border-left: 3px solid #2ecc71; }
+        .pod.pending { background: #2d2a00; border-left: 3px solid #f1c40f; }
+        .pod.other { background: #3a1a1a; border-left: 3px solid #e74c3c; }
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; background: #2ecc71; color: #000; }
+        .badge.pending { background: #f1c40f; }
+        .log { background: #0d1117; padding: 15px; border-radius: 4px; font-size: 0.75rem; height: 200px; overflow-y: auto; }
+        .log p { margin-bottom: 4px; color: #aaa; }
+        .log p.info { color: #00d4ff; }
+        .log p.success { color: #2ecc71; }
+        .log p.error { color: #e74c3c; }
+        .hpa { font-size: 0.85rem; }
+        .hpa .metric { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2a2a4a; }
+        .stress-count { font-size: 2rem; font-weight: bold; color: #00d4ff; text-align: center; padding: 10px; }
+    </style>
+</head>
+<body>
+    <h1>🚀 K8s Demo - Monitor HPA</h1>
+    <div class="grid">
+        <div class="card">
+            <h2>⚡ Acciones</h2>
+            <button onclick="llamar('/api/health', 'health')">Health Check</button>
+            <button onclick="llamar('/api/', 'api')">Estado API</button>
+            <button onclick="llamar('/api/db', 'db')">DB Check</button>
+            <br><br>
+            <button class="stress" onclick="lanzarStress(5)">Stress x5</button>
+            <button class="stress" onclick="lanzarStress(10)">Stress x10</button>
+            <button class="stress" onclick="lanzarStress(20)">Stress x20</button>
+            <div class="stress-count" id="stress-count">0 requests activos</div>
+            <pre id="respuesta">Presiona un botón...</pre>
+        </div>
+        <div class="card">
+            <h2>📊 HPA Status</h2>
+            <div class="hpa" id="hpa-info">Cargando...</div>
+        </div>
+        <div class="card">
+            <h2>🐳 Pods Backend</h2>
+            <div class="pods" id="pods-list">Cargando...</div>
+        </div>
+        <div class="card">
+            <h2>📋 Activity Log</h2>
+            <div class="log" id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let stressActivos = 0;
+        let podsAnteriores = [];
+
+        function log(msg, tipo = 'info') {
+            const logEl = document.getElementById('log');
+            const p = document.createElement('p');
+            p.className = tipo;
+            p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logEl.prepend(p);
+        }
+
+        async function llamar(url, nombre) {
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                document.getElementById('respuesta').textContent = JSON.stringify(data, null, 2);
+                log(`${nombre}: OK`, 'success');
+            } catch(e) {
+                document.getElementById('respuesta').textContent = 'Error: ' + e.message;
+                log(`${nombre}: ERROR`, 'error');
+            }
+        }
+
+        async function lanzarStress(cantidad) {
+            log(`Lanzando ${cantidad} requests de stress...`, 'info');
+            for (let i = 0; i < cantidad; i++) {
+                stressActivos++;
+                actualizarStressCount();
+                fetch('/api/stress?segundos=15')
+                    .then(r => r.json())
+                    .then(() => {
+                        stressActivos--;
+                        actualizarStressCount();
+                        log(`Stress completado`, 'success');
+                    })
+                    .catch(() => {
+                        stressActivos--;
+                        actualizarStressCount();
+                        log(`Stress error`, 'error');
+                    });
+            }
+        }
+
+        function actualizarStressCount() {
+            document.getElementById('stress-count').textContent = `${stressActivos} requests activos`;
+        }
+
+        async function actualizarPods() {
+            try {
+                const res = await fetch('/api/pods');
+                const data = await res.json();
+                const pods = data.pods || [];
+
+                // Detectar cambios
+                if (podsAnteriores.length && pods.length !== podsAnteriores.length) {
+                    if (pods.length > podsAnteriores.length) {
+                        log(`HPA escaló: ${podsAnteriores.length} → ${pods.length} pods ⬆️`, 'success');
+                    } else {
+                        log(`HPA redujo: ${podsAnteriores.length} → ${pods.length} pods ⬇️`, 'info');
+                    }
+                }
+                podsAnteriores = pods;
+
+                const el = document.getElementById('pods-list');
+                el.innerHTML = pods.map(p => `
+                    <div class="pod ${p.status === 'Running' ? 'running' : p.status === 'Pending' ? 'pending' : 'other'}">
+                        <span>${p.name.split('-').slice(-1)[0]}</span>
+                        <span class="badge ${p.status !== 'Running' ? 'pending' : ''}">${p.status}</span>
+                    </div>
+                `).join('');
+            } catch(e) {}
+        }
+
+        async function actualizarHPA() {
+            try {
+                const res = await fetch('/api/hpa');
+                const data = await res.json();
+                document.getElementById('hpa-info').innerHTML = `
+                    <div class="metric"><span>CPU Actual</span><span>${data.cpu_actual}</span></div>
+                    <div class="metric"><span>CPU Umbral</span><span>${data.cpu_umbral}</span></div>
+                    <div class="metric"><span>Réplicas</span><span>${data.replicas}</span></div>
+                    <div class="metric"><span>Min / Max</span><span>${data.min} / ${data.max}</span></div>
+                `;
+            } catch(e) {}
+        }
+
+        // Actualizar cada 3 segundos
+        setInterval(() => {
+            actualizarPods();
+            actualizarHPA();
+        }, 3000);
+
+        actualizarPods();
+        actualizarHPA();
+        log('Monitor iniciado', 'success');
+    </script>
+</body>
+</html>
