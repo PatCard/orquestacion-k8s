@@ -34,7 +34,7 @@ orquestacion-k8s/
 
 - [x] **Fase 1** - Instalación y fundamentos
 - [x] **Fase 2** - Conceptos core (Pod, Deployment, Service, ConfigMap, Namespace)
-- [x] **Fase 3** - Práctica real con HPA
+- [x] **Fase 3** - Práctica real con HPA e Ingress
 - [ ] **Fase 4** - Certificación (CKAD)
 
 ---
@@ -50,11 +50,17 @@ El script hace todo automáticamente:
 2. Reconstruye las imágenes Docker dentro del registry de minikube
 3. Reinicia los deployments con las nuevas imágenes
 4. Espera que todos los pods estén `Ready`
-5. Expone los servicios con port-forward
+5. Expone el Ingress controller en el puerto 80
 
-Una vez listo acceder desde el navegador:
-- **Frontend:** `http://192.168.1.10:9090`
-- **Backend:**  `http://192.168.1.10:8000`
+Una vez listo acceder desde cualquier máquina de la red:
+
+| URL | Descripción |
+|---|---|
+| `http://192.168.1.10` | Frontend - Monitor HPA |
+| `http://192.168.1.10/api/health` | Health check del backend |
+| `http://192.168.1.10/api/` | Estado de la API |
+| `http://192.168.1.10/api/db` | Verificar conexión a PostgreSQL |
+| `http://192.168.1.10/api/stress?segundos=15` | Generar carga de CPU |
 
 ## 🛑 Detener todo
 
@@ -242,21 +248,64 @@ metadata:
 
 ---
 
-## Fase 3 - Práctica real con HPA
+## Fase 3 - Práctica real con HPA e Ingress
 
 ### Arquitectura de la app demo
 
 ```
-Navegador → frontend (nginx:80) → backend (fastapi:8000) → postgresql:5432
+Internet
+    │
+    ▼
+Ingress (puerto 80)
+    ├── /        → frontend-service → frontend (nginx)
+    └── /api/    → backend-service  → backend (fastapi) → postgresql
 ```
 
 ### Stack desplegado
 
 | Componente | Imagen | Tipo |
 |---|---|---|
-| frontend | k8s-demo-frontend:2.0 | NodePort 30090 |
-| backend | k8s-demo-backend:2.0 | ClusterIP 8000 |
-| postgres | postgres:15 | ClusterIP 5432 |
+| frontend | k8s-demo-frontend:2.0 | ClusterIP |
+| backend | k8s-demo-backend:2.0 | ClusterIP |
+| postgres | postgres:15 | ClusterIP |
+| ingress | ingress-nginx | NodePort 80 |
+
+### Ingress
+
+Enrutamiento HTTP sin port-forwards, accesible desde cualquier máquina de la red:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 8000
+          - path: /()(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
+```
+
+**Habilitar Ingress en minikube:**
+```bash
+minikube addons enable ingress
+```
 
 ### PersistentVolumeClaim
 
@@ -325,6 +374,16 @@ rules:
     verbs: ["get", "list"]
 ```
 
+### Habilitar metrics-server (requerido para HPA)
+
+```bash
+minikube addons enable metrics-server
+
+# Fix para certificados autofirmados en minikube
+kubectl patch deployment metrics-server -n kube-system --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+```
+
 ### Endpoints del backend
 
 | Endpoint | Descripción |
@@ -336,16 +395,6 @@ rules:
 | `GET /pods` | Listar pods del backend |
 | `GET /hpa` | Estado del HPA |
 
-### Habilitar metrics-server (requerido para HPA)
-
-```bash
-minikube addons enable metrics-server
-
-# Fix para certificados autofirmados en minikube
-kubectl patch deployment metrics-server -n kube-system --type=json \
-  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
-```
-
 ---
 
 ## Comandos clave
@@ -356,6 +405,7 @@ minikube start --driver=docker                              # Iniciar cluster
 minikube stop                                               # Detener cluster
 minikube ip                                                 # IP del nodo
 minikube addons enable metrics-server                       # Habilitar metrics
+minikube addons enable ingress                              # Habilitar ingress
 
 # Pods
 kubectl get pods                                            # Listar pods
@@ -372,14 +422,18 @@ kubectl get deployments                                     # Listar deployments
 kubectl scale deployment <nombre> --replicas=5              # Escalar manualmente
 kubectl set image deployment/<nombre> <container>=<imagen>  # Actualizar imagen
 kubectl rollout restart deployment/<nombre>                 # Reiniciar deployment
+kubectl rollout undo deployment/<nombre>                    # Rollback
 
 # HPA
 kubectl get hpa                                             # Ver estado del HPA
 kubectl describe hpa <nombre>                               # Detalle del HPA
 
+# Ingress
+kubectl get ingress                                         # Ver ingress
+kubectl describe ingress <nombre>                           # Detalle del ingress
+
 # Services
 kubectl get services                                        # Listar services
-kubectl port-forward service/<nombre> 8080:80 --address=0.0.0.0
 
 # Manifiestos
 kubectl apply -f <archivo.yaml>                             # Aplicar manifiesto
